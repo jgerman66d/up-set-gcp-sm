@@ -4,10 +4,17 @@ from wtforms import StringField, PasswordField, SubmitField
 from wtforms.validators import DataRequired, ValidationError
 import ldap
 import subprocess
+from google.cloud import secretmanager
 
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key'  # Replace with your secret key
+
+# Initialize Secret Manager client
+client = secretmanager.SecretManagerServiceClient()
+
+# Your GCP project ID
+project_id = 'your-gcp-project-id'
 
 # Form definition
 class UserForm(FlaskForm):
@@ -39,6 +46,7 @@ def index():
         password = form.password.data
         try:
             update_samba_password(username, password)
+            set_secret(project_id, f'{username}-password', password)
             flash('Password updated successfully.', 'success')
         except Exception as e:
             flash(f"Error updating password: {str(e)}", 'error')
@@ -59,6 +67,27 @@ def get_logged_in_username():
 def update_samba_password(user, password):
     process = subprocess.Popen(['smbpasswd', '-a', user], stdin=subprocess.PIPE)
     process.communicate(input=f'{password}\n{password}\n'.encode())
+
+def set_secret(project_id, secret_id, secret_value):
+    # Build the resource name of the parent project
+    parent = client.project_path(project_id)
+
+    # Check if the secret already exists
+    secrets = [secret for secret in client.list_secrets(request={'parent': parent}) if secret.name == f'{parent}/secrets/{secret_id}']
+
+    if secrets:
+        # Secret already exists, update it
+        client.add_secret_version(request={'parent': f'projects/{project_id}/secrets/{secret_id}', 'payload': {'data': secret_value.encode('UTF-8')}})
+    else:
+        # Secret doesn't exist, create it
+        client.create_secret(
+            request={
+                'parent': parent,
+                'secret_id': secret_id,
+                'secret': {'replication': {'automatic': {}}}
+            }
+        )
+        client.add_secret_version(request={'parent': f'projects/{project_id}/secrets/{secret_id}', 'payload': {'data': secret_value.encode('UTF-8')}})
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True)  # Do not use debug mode in production
